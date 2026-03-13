@@ -20,6 +20,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 ENV UPLOAD_DIR=/app/tmp/uploads
 ENV STREAM_CACHE_DIR=/app/tmp/cache
+ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg ca-certificates \

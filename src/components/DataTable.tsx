@@ -13,13 +13,15 @@ interface DataTableProps<T> {
     columns: Column<T>[];
     onRowClick?: (item: T) => void;
     emptyMessage?: string;
+    getRowKey?: (item: T, index: number) => string | number;
 }
 
-export default function DataTable<T extends { _id?: string; id?: string | number }>({
+export default function DataTable<T>({
     data,
     columns,
     onRowClick,
     emptyMessage = 'No data available',
+    getRowKey,
 }: DataTableProps<T>) {
     if (data.length === 0) {
         return (
@@ -51,9 +53,13 @@ export default function DataTable<T extends { _id?: string; id?: string | number
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-700/50">
-                        {data.map((item, rowIndex) => (
+                        {data.map((item, rowIndex) => {
+                            const rowKey = getRowKey
+                                ? getRowKey(item, rowIndex)
+                                : ((item as any)?._id ?? (item as any)?.id ?? rowIndex);
+                            return (
                             <tr
-                                key={(item as any)._id || (item as any).id || rowIndex}
+                                key={rowKey}
                                 onClick={() => onRowClick?.(item)}
                                 className={`hover:bg-slate-800/50 transition-colors ${onRowClick ? 'cursor-pointer' : ''}`}
                             >
@@ -65,7 +71,8 @@ export default function DataTable<T extends { _id?: string; id?: string | number
                                     </td>
                                 ))}
                             </tr>
-                        ))}
+                            );
+                        })}
                     </tbody>
                 </table>
             </div>
