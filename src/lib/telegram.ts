@@ -3,6 +3,7 @@ import { MemoryStorage } from '@mtcute/core';
 import fs from 'fs';
 import path from 'path';
 import { Readable } from 'stream';
+import { getRedis } from './redis';
 
 const API_ID = parseInt(process.env.TELEGRAM_API_ID || '0');
 const API_HASH = process.env.TELEGRAM_API_HASH || '';
@@ -14,6 +15,7 @@ const CHANNEL_IDS = (process.env.TELEGRAM_CHANNEL_IDS || '')
 const SESSION_FILE = process.env.TELEGRAM_SESSION_FILE
     ? path.resolve(process.env.TELEGRAM_SESSION_FILE)
     : path.join(process.cwd(), 'telegram.session');
+const SESSION_REDIS_KEY = process.env.TELEGRAM_SESSION_REDIS_KEY || '';
 const MAX_RETRIES = 3;
 const RETRY_DELAYS = [2000, 5000, 10000]; // exponential backoff
 
@@ -35,7 +37,14 @@ export function advanceChannelIndex(steps: number) {
     channelRoundRobin += Math.floor(steps);
 }
 
-function loadSession(): string {
+async function loadSession(): Promise<string> {
+    if (SESSION_REDIS_KEY) {
+        try {
+            const redis = getRedis();
+            const value = await redis.get(SESSION_REDIS_KEY);
+            if (value) return value.trim();
+        } catch { }
+    }
     try {
         if (fs.existsSync(SESSION_FILE)) {
             return fs.readFileSync(SESSION_FILE, 'utf-8').trim();
@@ -45,13 +54,25 @@ function loadSession(): string {
 }
 
 async function saveSession(session: string) {
+    if (SESSION_REDIS_KEY) {
+        try {
+            const redis = getRedis();
+            await redis.set(SESSION_REDIS_KEY, session);
+        } catch { }
+    }
     try {
         fs.mkdirSync(path.dirname(SESSION_FILE), { recursive: true });
+        fs.writeFileSync(SESSION_FILE, session, 'utf-8');
     } catch { }
-    fs.writeFileSync(SESSION_FILE, session, 'utf-8');
 }
 
-function clearSessionFile() {
+async function clearSessionFile() {
+    if (SESSION_REDIS_KEY) {
+        try {
+            const redis = getRedis();
+            await redis.del(SESSION_REDIS_KEY);
+        } catch { }
+    }
     try {
         if (fs.existsSync(SESSION_FILE)) {
             fs.unlinkSync(SESSION_FILE);
@@ -62,7 +83,7 @@ function clearSessionFile() {
 export async function initClient(): Promise<TelegramClient> {
     if (client) return client;
 
-    const sessionStr = loadSession();
+    const sessionStr = await loadSession();
     
     client = new TelegramClient({
         apiId: API_ID,
@@ -75,7 +96,7 @@ export async function initClient(): Promise<TelegramClient> {
             await client.importSession(sessionStr);
         } catch (e) {
             console.error('Failed to import session:', e);
-            clearSessionFile();
+            await clearSessionFile();
         }
     }
 
@@ -108,7 +129,7 @@ export async function resetClientSession() {
     } finally {
         client = null;
         channelRoundRobin = 0;
-        clearSessionFile();
+        await clearSessionFile();
     }
 }
 
