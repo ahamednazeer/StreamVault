@@ -11,7 +11,9 @@ const CHANNEL_IDS = (process.env.TELEGRAM_CHANNEL_IDS || '')
     .map((id) => id.trim())
     .filter(Boolean);
 
-const SESSION_FILE = path.join(process.cwd(), 'telegram.session');
+const SESSION_FILE = process.env.TELEGRAM_SESSION_FILE
+    ? path.resolve(process.env.TELEGRAM_SESSION_FILE)
+    : path.join(process.cwd(), 'telegram.session');
 const MAX_RETRIES = 3;
 const RETRY_DELAYS = [2000, 5000, 10000]; // exponential backoff
 
@@ -43,6 +45,9 @@ function loadSession(): string {
 }
 
 async function saveSession(session: string) {
+    try {
+        fs.mkdirSync(path.dirname(SESSION_FILE), { recursive: true });
+    } catch { }
     fs.writeFileSync(SESSION_FILE, session, 'utf-8');
 }
 
