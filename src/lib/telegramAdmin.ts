@@ -1,9 +1,11 @@
 import { randomUUID } from 'crypto';
 import { initClient, saveClientSession, resetClientSession } from './telegram';
+import { getRedis } from './redis';
 
 const API_ID = parseInt(process.env.TELEGRAM_API_ID || '0', 10);
 const API_HASH = process.env.TELEGRAM_API_HASH || '';
 const LOGIN_TTL_MS = 10 * 60 * 1000;
+const LOGIN_TTL_SECONDS = Math.ceil(LOGIN_TTL_MS / 1000);
 const CONNECT_TIMEOUT_MS = Number.parseInt(process.env.TELEGRAM_CONNECT_TIMEOUT_MS || '30000', 10);
 const SEND_CODE_TIMEOUT_MS = Number.parseInt(process.env.TELEGRAM_SEND_CODE_TIMEOUT_MS || '60000', 10);
 const VERIFY_TIMEOUT_MS = Number.parseInt(process.env.TELEGRAM_VERIFY_TIMEOUT_MS || '30000', 10);
@@ -27,6 +29,10 @@ declare global {
     var telegramLoginInProgress: boolean | undefined;
 }
 
+function getLoginKey(loginId: string) {
+    return `tg_login:${loginId}`;
+}
+
 function getLoginStore(): Map<string, PendingLogin> {
     if (!global.telegramLoginStore) {
         global.telegramLoginStore = new Map();
@@ -40,6 +46,40 @@ function pruneLoginStore(store: Map<string, PendingLogin>) {
         if (now - value.createdAt > LOGIN_TTL_MS) {
             store.delete(key);
         }
+    }
+}
+
+async function setPendingLogin(loginId: string, data: PendingLogin) {
+    try {
+        const redis = getRedis();
+        await redis.set(getLoginKey(loginId), JSON.stringify(data), 'EX', LOGIN_TTL_SECONDS);
+    } catch {
+        const store = getLoginStore();
+        pruneLoginStore(store);
+        store.set(loginId, data);
+    }
+}
+
+async function getPendingLogin(loginId: string): Promise<PendingLogin | null> {
+    try {
+        const redis = getRedis();
+        const raw = await redis.get(getLoginKey(loginId));
+        if (!raw) return null;
+        return JSON.parse(raw) as PendingLogin;
+    } catch {
+        const store = getLoginStore();
+        pruneLoginStore(store);
+        return store.get(loginId) || null;
+    }
+}
+
+async function deletePendingLogin(loginId: string) {
+    try {
+        const redis = getRedis();
+        await redis.del(getLoginKey(loginId));
+    } catch {
+        const store = getLoginStore();
+        store.delete(loginId);
     }
 }
 
@@ -133,10 +173,8 @@ export async function startTelegramLogin(phoneNumber: string, forceSMS = false) 
 
         console.info('[telegram] sendCode ok', { deliveryType });
 
-        const store = getLoginStore();
-        pruneLoginStore(store);
         const loginId = randomUUID();
-        store.set(loginId, {
+        await setPendingLogin(loginId, {
             phoneNumber: normalizedPhone,
             phoneCodeHash,
             createdAt: Date.now(),
@@ -155,27 +193,29 @@ export async function startTelegramLogin(phoneNumber: string, forceSMS = false) 
 
 export async function verifyTelegramCode(loginId: string, phoneCode: string) {
     ensureApiCredentials();
-    const store = getLoginStore();
-    pruneLoginStore(store);
-    const pending = store.get(loginId);
+    const pending = await getPendingLogin(loginId);
     if (!pending) {
         throw new Error('Login expired. Please start again.');
     }
 
     const client = await withTimeout(initClient(), CONNECT_TIMEOUT_MS, 'telegram connect');
+    const cleanedCode = String(phoneCode || '').replace(/\D/g, '');
+    if (!cleanedCode) {
+        throw new Error('Invalid code. Please enter the digits only.');
+    }
     try {
         await withTimeout(
             (client as any).signIn({
                 phone: pending.phoneNumber,
                 phoneCodeHash: pending.phoneCodeHash,
-                code: phoneCode,
+                code: cleanedCode,
             }),
             VERIFY_TIMEOUT_MS,
             'telegram verify code'
         );
 
         await saveClientSession();
-        store.delete(loginId);
+        await deletePendingLogin(loginId);
 
         const user = await getMeInfo();
         return { status: 'authorized' as const, user };
@@ -189,9 +229,7 @@ export async function verifyTelegramCode(loginId: string, phoneCode: string) {
 
 export async function verifyTelegramPassword(loginId: string, password: string) {
     ensureApiCredentials();
-    const store = getLoginStore();
-    pruneLoginStore(store);
-    const pending = store.get(loginId);
+    const pending = await getPendingLogin(loginId);
     if (!pending) {
         throw new Error('Login expired. Please start again.');
     }
@@ -207,7 +245,7 @@ export async function verifyTelegramPassword(loginId: string, password: string) 
     );
 
     await saveClientSession();
-    store.delete(loginId);
+    await deletePendingLogin(loginId);
 
     const user = await getMeInfo();
     return { status: 'authorized' as const, user };
