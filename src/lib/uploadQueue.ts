@@ -1,8 +1,8 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { setMaxListeners } from 'events';
 import { getRedis } from './redis';
-import { uploadVideoToTelegram, uploadVideoStreamToTelegram, getChannelIds, getChannelIndexForId, advanceChannelIndex, deleteVideoFromTelegram, isTelegramAuthorized } from './telegram';
-import { extractVideoMetadata, remuxToMp4, transcodeToMp4 } from './ffmpeg';
+import { uploadVideoToTelegram, uploadVideoStreamToTelegram, uploadAudioToTelegram, getChannelIds, getChannelIndexForId, advanceChannelIndex, deleteVideoFromTelegram, isTelegramAuthorized } from './telegram';
+import { extractVideoMetadata, getAudioStreamsMetadata, extractAudioTrack, remuxToMp4, transcodeToMp4 } from './ffmpeg';
 import { ensureHlsPlaylist } from './hls';
 import { shouldUseHls, isHlsEnabled, isMkvRemuxEnabled, isMkvTranscodeEnabled } from './media';
 import { getTelegramMaxUploadSizeBytes } from './limits';
@@ -308,6 +308,71 @@ export function startUploadWorker(): Worker {
                     });
                 }
 
+                // --- Extract and Upload Audio Tracks ---
+                try {
+                    await Video.findByIdAndUpdate(videoId, { lastError: 'Extracting audio tracks...' });
+                    const audioStreams = await getAudioStreamsMetadata(workingPath);
+                    const uploadedAudioTracks = [];
+
+                    for (const stream of audioStreams) {
+                        if (abortController.signal.aborted) break;
+
+                        const audioTempPath = path.join(
+                            path.dirname(workingPath),
+                            `${path.basename(workingPath, path.extname(workingPath))}_audio_${stream.index}.m4a`
+                        );
+                        
+                        try {
+                            const trackTitle = stream.title || stream.language || `Track ${stream.index}`;
+                            await Video.findByIdAndUpdate(videoId, { 
+                                lastError: `Extracting ${trackTitle}...` 
+                            });
+
+                            await extractAudioTrack(workingPath, audioTempPath, stream.index);
+
+                            if (abortController.signal.aborted) throw new Error('Canceled');
+
+                            await Video.findByIdAndUpdate(videoId, { 
+                                lastError: `Uploading ${trackTitle}...` 
+                            });
+
+                            const audioResult = await uploadAudioToTelegram(
+                                audioTempPath,
+                                `audio_${stream.index}.m4a`,
+                                trackTitle,
+                                undefined, // Skip progress for audio tracks to avoid jumpy UI, they are small
+                                { abortSignal: abortController.signal }
+                            );
+
+                            uploadedAudioTracks.push({
+                                index: stream.index,
+                                language: stream.language,
+                                title: stream.title,
+                                codec: stream.codec,
+                                telegramChannelId: audioResult.channelId,
+                                telegramMessageId: audioResult.messageId,
+                                size: audioResult.fileSize,
+                            });
+                        } catch (audioErr: any) {
+                            console.error(`Failed to process audio stream ${stream.index}:`, audioErr.message);
+                        } finally {
+                            try {
+                                if (fs.existsSync(audioTempPath)) {
+                                    fs.unlinkSync(audioTempPath);
+                                }
+                            } catch { }
+                        }
+                    }
+
+                    if (uploadedAudioTracks.length > 0) {
+                        await Video.findByIdAndUpdate(videoId, { audioTracks: uploadedAudioTracks });
+                    }
+                    
+                    await Video.findByIdAndUpdate(videoId, { lastError: null }); // clear status message
+                } catch (audioErr: any) {
+                    console.error('Audio track extraction failed:', audioErr.message);
+                }
+                
                 // Delete temp file
                 try {
                     if (fs.existsSync(workingPath)) {
@@ -318,7 +383,7 @@ export function startUploadWorker(): Worker {
                 await Video.findByIdAndUpdate(videoId, { tempFilePath: '' });
 
                 // Prebuild HLS playlist in the background for faster first play (only if needed).
-                const latest = await Video.findById(videoId).select('mimeType codec parts').lean();
+                const latest = await Video.findById(videoId).select('mimeType codec parts audioTracks').lean();
                 if (latest && isHlsEnabled() && shouldUseHls(latest.mimeType, latest.codec)) {
                         const parts = Array.isArray(latest.parts) && latest.parts.length > 0
                         ? (latest.parts as VideoPart[])
@@ -326,7 +391,7 @@ export function startUploadWorker(): Worker {
                     if (parts.length > 0) {
                         const authorized = await isTelegramAuthorized();
                         if (authorized) {
-                            ensureHlsPlaylist(videoId, parts)
+                            ensureHlsPlaylist(videoId, parts, latest.audioTracks || [])
                                 .catch((err) => console.error('HLS prebuild failed:', err.message));
                         } else {
                             console.warn('Skipping HLS prebuild: Telegram not authorized');

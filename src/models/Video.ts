@@ -30,6 +30,15 @@ export interface IVideo extends Document {
     uploadCompletedAt: Date | null;
     canceledAt: Date | null;
     tempFilePath: string;
+    audioTracks: {
+        index: number;
+        language: string;
+        title: string;
+        codec: string;
+        telegramChannelId: string;
+        telegramMessageId: number;
+        size: number;
+    }[];
     createdAt: Date;
 }
 
@@ -134,6 +143,20 @@ const videoSchema = new Schema<IVideo>({
     tempFilePath: {
         type: String,
         default: '',
+    },
+    audioTracks: {
+        type: [
+            {
+                index: { type: Number, required: true },
+                language: { type: String, default: '' },
+                title: { type: String, default: '' },
+                codec: { type: String, default: '' },
+                telegramChannelId: { type: String, required: true },
+                telegramMessageId: { type: Number, required: true },
+                size: { type: Number, required: true },
+            },
+        ],
+        default: [],
     },
     createdAt: {
         type: Date,

@@ -38,7 +38,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
                 return NextResponse.json({ error: 'Invalid range' }, { status: 416 });
             }
 
-            const maxChunk = 1024 * 1024; // 1MB
+            const maxChunk = 1024 * 1024; // 1MB (Telegram downloadChunk limit)
             const part = parts.find((p: any) => start >= p.startByte && start <= p.endByte);
             if (!part) {
                 return new NextResponse(null, {
@@ -48,9 +48,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
                     },
                 });
             }
-            const cappedEnd = Math.min(end, part.endByte, start + maxChunk - 1);
-
-            if (start >= totalSize || cappedEnd >= totalSize) {
+            const desiredEnd = Math.min(end, part.endByte, totalSize - 1);
+            if (start >= totalSize || desiredEnd < start) {
                 return new NextResponse(null, {
                     status: 416,
                     headers: {
@@ -59,13 +58,55 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
                 });
             }
 
-            const chunk = await downloadVideoChunkFromTelegram(
+            const requestedLength = desiredEnd - start + 1;
+            const offsetInPart = start - part.startByte;
+            const partSize = typeof part.size === 'number' && part.size > 0
+                ? part.size
+                : (part.endByte - part.startByte + 1);
+
+            // Use a fixed 1MB block grid to maximize cache hit rates and throughput.
+            // Telegram requires offset % limit === 0. By aligning down to 1MB multiples
+            // and requesting exactly 1MB, we always satisfy Telegram and our cache keys
+            // remain highly predictable (0, 1MB, 2MB, etc).
+            const alignedLimit = maxChunk;
+            const alignedOffset = Math.floor(offsetInPart / alignedLimit) * alignedLimit;
+
+            const stripStart = offsetInPart - alignedOffset;
+            const maxDesired = Math.max(0, alignedLimit - stripStart);
+            const desiredLength = Math.min(requestedLength, maxDesired);
+            if (desiredLength <= 0) {
+                return new NextResponse(null, {
+                    status: 416,
+                    headers: {
+                        'Content-Range': `bytes */${totalSize}`,
+                    },
+                });
+            }
+
+            console.info('[stream] range', {
+                id,
+                start,
+                desiredEnd,
+                requestedLength,
+                partStart: part.startByte,
+                partEnd: part.endByte,
+                partSize,
+                offsetInPart,
+                alignedOffset,
+                alignedLimit,
+                stripStart,
+                desiredLength,
+            });
+
+            const rawChunk = await downloadVideoChunkFromTelegram(
                 part.telegramChannelId,
                 part.telegramMessageId,
-                start - part.startByte,
-                cappedEnd - start + 1
+                alignedOffset,
+                alignedLimit
             );
+            const chunk = rawChunk.slice(stripStart, stripStart + desiredLength);
 
+            const cappedEnd = start + desiredLength - 1;
             return new NextResponse(chunk as any, {
                 status: 206,
                 headers: {

@@ -120,3 +120,55 @@ export function transcodeToMp4(inputPath: string, outputPath: string): Promise<v
             .save(outputPath);
     });
 }
+
+export type AudioStreamInfo = {
+    index: number;
+    language: string;
+    title: string;
+    codec: string;
+};
+
+export function getAudioStreamsMetadata(filePath: string): Promise<AudioStreamInfo[]> {
+    return new Promise((resolve, reject) => {
+        ffmpeg.ffprobe(filePath, (err, metadata) => {
+            if (err) {
+                reject(new Error(`FFmpeg probe failed for audio: ${err.message}`));
+                return;
+            }
+            if (!metadata?.streams) {
+                resolve([]);
+                return;
+            }
+
+            const audioStreams = metadata.streams
+                .filter((s) => s.codec_type === 'audio')
+                .map((s) => ({
+                    index: typeof s.index === 'number' ? s.index : 0,
+                    language: s.tags?.language || '',
+                    title: s.tags?.title || '',
+                    codec: s.codec_name || 'unknown',
+                }));
+
+            resolve(audioStreams);
+        });
+    });
+}
+
+export function extractAudioTrack(inputPath: string, outputPath: string, streamIndex: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+        ffmpeg(inputPath)
+            .outputOptions([
+                `-map 0:${streamIndex}`,
+                '-vn', // No video
+                '-c:a aac', // Convert to Web-compatible AAC format
+                '-b:a 160k',
+                '-ac 2',
+                '-f ipod', // This is typical for .m4a format using AAC
+            ])
+            .on('error', (err) => {
+                reject(new Error(`FFmpeg audio extraction failed for stream ${streamIndex}: ${err.message}`));
+            })
+            .on('end', () => resolve())
+            .save(outputPath);
+    });
+}

@@ -109,7 +109,12 @@ export default function WatchPage() {
 
             {/* Video Player */}
             {video.status === 'ready' ? (
-                <VideoPlayer videoId={videoId} mimeType={video.mimeType} codec={video.codec} />
+                <VideoPlayer 
+                    videoId={videoId} 
+                    mimeType={video.mimeType} 
+                    codec={video.codec} 
+                    audioTracks={video.audioTracks} 
+                />
             ) : (
                 <div className="aspect-video bg-slate-800/40 border border-slate-700/60 rounded-sm flex items-center justify-center">
                     <div className="text-center space-y-3">

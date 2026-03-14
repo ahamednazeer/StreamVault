@@ -164,7 +164,7 @@ function deleteHlsCacheByPath(dir: string) {
     } catch { }
 }
 
-async function buildHls(videoId: string, parts: VideoPart[]): Promise<string> {
+async function buildHls(videoId: string, parts: VideoPart[], audioTracks: any[] = []): Promise<string> {
     const normalizedParts = [...parts].sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
     const key = videoId;
     if (buildLocks.has(key)) {
@@ -193,7 +193,10 @@ async function buildHls(videoId: string, parts: VideoPart[]): Promise<string> {
         const videoPlaylist = path.join(outDir, 'video.m3u8');
         const videoSegmentPattern = path.join(outDir, 'video_%03d.ts');
 
-        const audioInfos = await getAudioStreams(normalizedParts);
+        const hasDbAudio = audioTracks && audioTracks.length > 0;
+        const audioInfos = hasDbAudio 
+            ? audioTracks.map(t => ({ index: t.index, language: t.language, title: t.title, channels: 2 }))
+            : await getAudioStreams(normalizedParts);
         const hasAudio = audioInfos.length > 0;
 
         const audioPlaylists = audioInfos.map((_, i) => path.join(outDir, `audio_${i}.m3u8`));
@@ -229,7 +232,11 @@ async function buildHls(videoId: string, parts: VideoPart[]): Promise<string> {
         lines.push('video.m3u8');
         fs.writeFileSync(playlistPath, lines.join('\n'));
 
-        const inputStream = Readable.from(async function* () {
+        const ffmpegPromises: Promise<void>[] = [];
+        let inputStreams: Readable[] = [];
+
+        // --- 1. Video Command ---
+        const videoInputStream = Readable.from(async function* () {
             for (const part of normalizedParts) {
                 const stream = await downloadVideoStreamFromTelegram(part.telegramChannelId, part.telegramMessageId);
                 for await (const chunk of stream as any) {
@@ -237,9 +244,10 @@ async function buildHls(videoId: string, parts: VideoPart[]): Promise<string> {
                 }
             }
         }());
+        inputStreams.push(videoInputStream);
 
-        const command = ffmpeg()
-            .input(inputStream as any)
+        const videoCommand = ffmpeg()
+            .input(videoInputStream as any)
             .output(videoPlaylist)
             .outputOptions([
                 '-map 0:v:0',
@@ -254,30 +262,64 @@ async function buildHls(videoId: string, parts: VideoPart[]): Promise<string> {
                 `-hls_segment_filename ${videoSegmentPattern}`,
             ]);
 
-        audioInfos.forEach((_, i) => {
-            command
-                .output(audioPlaylists[i])
-                .outputOptions([
-                    `-map 0:a:${i}`,
-                    '-vn',
-                    '-c:a aac',
-                    '-b:a 160k',
-                    '-ac 2',
-                    '-f hls',
-                    `-hls_time ${HLS_TIME}`,
-                    '-hls_list_size 0',
-                    '-hls_playlist_type event',
-                    '-hls_flags independent_segments+append_list',
-                    `-hls_segment_filename ${audioSegmentPatterns[i]}`,
-                ]);
-        });
+        // If no DB audio tracks, extract audio from the video stream
+        if (!hasDbAudio && hasAudio) {
+            audioInfos.forEach((_, i) => {
+                videoCommand
+                    .output(audioPlaylists[i])
+                    .outputOptions([
+                        `-map 0:a:${i}`,
+                        '-vn',
+                        '-c:a aac',
+                        '-b:a 160k',
+                        '-ac 2',
+                        '-f hls',
+                        `-hls_time ${HLS_TIME}`,
+                        '-hls_list_size 0',
+                        '-hls_playlist_type event',
+                        '-hls_flags independent_segments+append_list',
+                        `-hls_segment_filename ${audioSegmentPatterns[i]}`,
+                    ]);
+            });
+        }
 
-        const ffmpegPromise = new Promise<void>((resolve, reject) => {
-            command
-                .on('end', () => resolve())
-                .on('error', (err) => reject(err))
-                .run();
-        });
+        ffmpegPromises.push(new Promise<void>((resolve, reject) => {
+            videoCommand.on('end', () => resolve()).on('error', reject).run();
+        }));
+
+        // --- 2. DB Audio Commands ---
+        if (hasDbAudio && hasAudio) {
+            audioTracks.forEach((track, i) => {
+                const audioInputStream = Readable.from(async function* () {
+                    const stream = await downloadVideoStreamFromTelegram(track.telegramChannelId, track.telegramMessageId);
+                    for await (const chunk of stream as any) yield chunk;
+                }());
+                inputStreams.push(audioInputStream);
+
+                const audioCommand = ffmpeg()
+                    .input(audioInputStream as any)
+                    .output(audioPlaylists[i])
+                    .outputOptions([
+                        '-map 0:a:0', // Since it is a standalone audio file, it's at index 0
+                        '-vn',
+                        '-c:a aac',
+                        '-b:a 160k',
+                        '-ac 2',
+                        '-f hls',
+                        `-hls_time ${HLS_TIME}`,
+                        '-hls_list_size 0',
+                        '-hls_playlist_type event',
+                        '-hls_flags independent_segments+append_list',
+                        `-hls_segment_filename ${audioSegmentPatterns[i]}`,
+                    ]);
+
+                ffmpegPromises.push(new Promise<void>((resolve, reject) => {
+                    audioCommand.on('end', () => resolve()).on('error', reject).run();
+                }));
+            });
+        }
+
+        const ffmpegPromise = Promise.all(ffmpegPromises).then(() => {});
 
         const waitForPlaylists = async (): Promise<boolean> => {
             const targets = [videoPlaylist, ...audioPlaylists];
@@ -311,9 +353,11 @@ async function buildHls(videoId: string, parts: VideoPart[]): Promise<string> {
             .catch((err) => readyReject?.(err))
             .finally(() => {
                 try {
-                    if (inputStream && typeof (inputStream as any).destroy === 'function') {
-                        (inputStream as any).destroy();
-                    }
+                    inputStreams.forEach(stream => {
+                        if (stream && typeof (stream as any).destroy === 'function') {
+                            (stream as any).destroy();
+                        }
+                    });
                 } catch { }
             });
 
@@ -340,8 +384,8 @@ async function buildHls(videoId: string, parts: VideoPart[]): Promise<string> {
     return promise;
 }
 
-export async function ensureHlsPlaylist(videoId: string, parts: VideoPart[]): Promise<string> {
-    return buildHls(videoId, parts);
+export async function ensureHlsPlaylist(videoId: string, parts: VideoPart[], audioTracks: any[] = []): Promise<string> {
+    return buildHls(videoId, parts, audioTracks);
 }
 
 export function deleteHlsCache(videoId: string) {
