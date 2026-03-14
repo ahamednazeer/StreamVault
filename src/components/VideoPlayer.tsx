@@ -3,7 +3,10 @@
 import React, { useRef, useEffect } from 'react';
 import { api } from '@/lib/api';
 import { shouldUseHls } from '@/lib/media';
-import videojs, { VideoJsPlayer, VideoJsPlayerOptions } from 'video.js';
+import videojs from 'video.js';
+
+type VideoJsPlayer = any;
+type VideoJsPlayerOptions = any;
 
 interface VideoPlayerProps {
     videoId: string;

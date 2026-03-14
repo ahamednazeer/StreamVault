@@ -66,7 +66,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
                 cappedEnd - start + 1
             );
 
-            return new NextResponse(chunk, {
+            return new NextResponse(chunk as any, {
                 status: 206,
                 headers: {
                     'Content-Range': `bytes ${start}-${cappedEnd}/${totalSize}`,
@@ -97,7 +97,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
         const toWeb = (Readable as any).toWeb;
         const webStream = typeof toWeb === 'function' ? toWeb(nodeStream as any) : (nodeStream as any);
 
-        return new NextResponse(webStream, {
+        return new NextResponse(webStream as any, {
             status: 200,
             headers: {
                 'Content-Type': mimeType || 'video/mp4',
