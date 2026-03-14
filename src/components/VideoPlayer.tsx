@@ -2,7 +2,7 @@
 
 import React, { useRef, useEffect } from 'react';
 import { api } from '@/lib/api';
-import { shouldUseHls } from '@/lib/media';
+import { shouldUseHls, isHlsEnabled } from '@/lib/media';
 import videojs from 'video.js';
 
 type VideoJsPlayer = any;
@@ -71,7 +71,7 @@ export default function VideoPlayer({ videoId, mimeType, codec, className = '' }
 
             player.on('error', () => {
                 const err = player.error();
-                if (err?.code === 4 && !forceHlsRef.current) {
+                if (err?.code === 4 && !forceHlsRef.current && isHlsEnabled()) {
                     forceHlsRef.current = true;
                     player.src({ src: hlsUrl, type: 'application/x-mpegURL' });
                     player.load();

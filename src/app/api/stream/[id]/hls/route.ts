@@ -3,6 +3,7 @@ import { connectDB } from '@/lib/db';
 import Video from '@/models/Video';
 import { ensureHlsPlaylist, touchHlsAccess } from '@/lib/hls';
 import { getVideoParts } from '@/lib/videoParts';
+import { isHlsEnabled } from '@/lib/media';
 import fs from 'fs';
 
 type RouteParams = { params: Promise<{ id: string }> };
@@ -11,6 +12,9 @@ type RouteParams = { params: Promise<{ id: string }> };
 export async function GET(request: NextRequest, { params }: RouteParams) {
     try {
         const { id } = await params;
+        if (!isHlsEnabled()) {
+            return NextResponse.json({ error: 'HLS disabled' }, { status: 404 });
+        }
         await connectDB();
 
         const video = await Video.findById(id);
@@ -66,6 +70,10 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
             },
         });
     } catch (error: any) {
+        const message = String(error?.message || '');
+        if (message.includes('Telegram not authorized') || message.includes('AUTH_KEY_UNREGISTERED')) {
+            return NextResponse.json({ error: 'Telegram not authorized' }, { status: 401 });
+        }
         console.error('HLS playlist error:', error);
         return NextResponse.json({ error: 'Streaming failed' }, { status: 500 });
     }

@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import ffmpeg from 'fluent-ffmpeg';
-import { downloadVideoStreamFromTelegram } from './telegram';
+import { downloadVideoStreamFromTelegram, isTelegramAuthorized } from './telegram';
 import { Readable } from 'stream';
 import { VideoPart } from './videoParts';
 
@@ -172,6 +172,10 @@ async function buildHls(videoId: string, parts: VideoPart[]): Promise<string> {
     }
 
     const promise = (async () => {
+        const authorized = await isTelegramAuthorized();
+        if (!authorized) {
+            throw new Error('Telegram not authorized');
+        }
         const outDir = getHlsDir(videoId);
         const playlistPath = getHlsPlaylistPath(videoId);
 

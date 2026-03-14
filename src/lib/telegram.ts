@@ -103,6 +103,16 @@ export async function initClient(): Promise<TelegramClient> {
     return client;
 }
 
+export async function isTelegramAuthorized(): Promise<boolean> {
+    try {
+        const tg = await initClient();
+        const me = await tg.getMe();
+        return !!me;
+    } catch {
+        return false;
+    }
+}
+
 export async function saveClientSession(session?: string) {
     if (session) {
         await saveSession(session);

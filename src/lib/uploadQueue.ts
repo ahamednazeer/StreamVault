@@ -1,15 +1,16 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { setMaxListeners } from 'events';
 import { getRedis } from './redis';
-import { uploadVideoToTelegram, uploadVideoStreamToTelegram, getChannelIds, getChannelIndexForId, advanceChannelIndex, deleteVideoFromTelegram } from './telegram';
-import { extractVideoMetadata } from './ffmpeg';
+import { uploadVideoToTelegram, uploadVideoStreamToTelegram, getChannelIds, getChannelIndexForId, advanceChannelIndex, deleteVideoFromTelegram, isTelegramAuthorized } from './telegram';
+import { extractVideoMetadata, remuxToMp4 } from './ffmpeg';
 import { ensureHlsPlaylist } from './hls';
-import { shouldUseHls } from './media';
+import { shouldUseHls, isHlsEnabled, isMkvRemuxEnabled } from './media';
 import { getTelegramMaxUploadSizeBytes } from './limits';
 import { VideoPart } from './videoParts';
 import { connectDB } from './db';
 import Video from '@/models/Video';
 import fs from 'fs';
+import path from 'path';
 
 const QUEUE_NAME = 'video-upload';
 
@@ -113,7 +114,42 @@ export function startUploadWorker(): Worker {
             let uploadedParts: VideoPart[] = [];
 
             try {
-                const fileStats = fs.statSync(filePath);
+                let workingPath = filePath;
+                let workingName = fileName;
+                let workingExt = path.extname(fileName).toLowerCase();
+                let workingMime = undefined as string | undefined;
+
+                const remuxEnabled = !isHlsEnabled() && isMkvRemuxEnabled();
+                if (remuxEnabled && workingExt === '.mkv') {
+                    const outputPath = path.join(
+                        path.dirname(filePath),
+                        `${path.basename(filePath, workingExt)}.mp4`
+                    );
+                    try {
+                        await Video.findByIdAndUpdate(videoId, {
+                            status: 'processing',
+                            lastError: 'Remuxing MKV to MP4 for browser playback...',
+                        });
+                    } catch { }
+                    try {
+                        try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch { }
+                        await remuxToMp4(workingPath, outputPath);
+                        try { if (fs.existsSync(workingPath)) fs.unlinkSync(workingPath); } catch { }
+                        workingPath = outputPath;
+                        workingName = `${path.basename(fileName, workingExt)}.mp4`;
+                        workingExt = '.mp4';
+                        workingMime = 'video/mp4';
+                        await Video.findByIdAndUpdate(videoId, {
+                            tempFilePath: workingPath,
+                            mimeType: 'video/mp4',
+                        });
+                    } catch (err: any) {
+                        try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch { }
+                        throw new Error(err?.message || 'Failed to remux MKV to MP4');
+                    }
+                }
+
+                const fileStats = fs.statSync(workingPath);
                 const totalSize = fileStats.size;
                 const maxPartSize = getTelegramMaxUploadSizeBytes();
                 const safePartSize = Math.max(maxPartSize - 4 * 1024 * 1024, 64 * 1024);
@@ -125,8 +161,8 @@ export function startUploadWorker(): Worker {
                     // Single part upload
                     try {
                         result = await uploadVideoToTelegram(
-                            filePath,
-                            fileName,
+                            workingPath,
+                            workingName,
                             async (progress: number) => {
                                 await Video.findByIdAndUpdate(videoId, {
                                     uploadProgress: progress,
@@ -170,11 +206,11 @@ export function startUploadWorker(): Worker {
                         const startByte = i * safePartSize;
                         const endByte = Math.min(startByte + safePartSize - 1, totalSize - 1);
                         const partSize = endByte - startByte + 1;
-                        const partName = `${fileName}.part${String(i + 1).padStart(2, '0')}`;
+                        const partName = `${workingName}.part${String(i + 1).padStart(2, '0')}`;
 
                         const channelId = channelIds[i % channelIds.length];
                         const partResult = await uploadVideoStreamToTelegram(
-                            () => fs.createReadStream(filePath, { start: startByte, end: endByte }),
+                            () => fs.createReadStream(workingPath, { start: startByte, end: endByte }),
                             partName,
                             partSize,
                             async (progress: number) => {
@@ -221,11 +257,12 @@ export function startUploadWorker(): Worker {
                     storageChannelIndex: parts.length > 0 ? getChannelIndexForId(parts[0].telegramChannelId) : -1,
                     uploadProgress: 100,
                     parts,
+                    ...(workingMime ? { mimeType: workingMime } : {}),
                 });
 
                 // Extract video metadata with FFmpeg
                 try {
-                    const metadata = await extractVideoMetadata(filePath);
+                    const metadata = await extractVideoMetadata(workingPath);
                     await Video.findByIdAndUpdate(videoId, {
                         duration: metadata.duration,
                         resolution: metadata.resolution,
@@ -244,8 +281,8 @@ export function startUploadWorker(): Worker {
 
                 // Delete temp file
                 try {
-                    if (fs.existsSync(filePath)) {
-                        fs.unlinkSync(filePath);
+                    if (fs.existsSync(workingPath)) {
+                        fs.unlinkSync(workingPath);
                     }
                 } catch { }
 
@@ -253,13 +290,18 @@ export function startUploadWorker(): Worker {
 
                 // Prebuild HLS playlist in the background for faster first play (only if needed).
                 const latest = await Video.findById(videoId).select('mimeType codec parts').lean();
-                if (latest && shouldUseHls(latest.mimeType, latest.codec)) {
+                if (latest && isHlsEnabled() && shouldUseHls(latest.mimeType, latest.codec)) {
                         const parts = Array.isArray(latest.parts) && latest.parts.length > 0
                         ? (latest.parts as VideoPart[])
                         : uploadedParts;
                     if (parts.length > 0) {
-                        ensureHlsPlaylist(videoId, parts)
-                            .catch((err) => console.error('HLS prebuild failed:', err.message));
+                        const authorized = await isTelegramAuthorized();
+                        if (authorized) {
+                            ensureHlsPlaylist(videoId, parts)
+                                .catch((err) => console.error('HLS prebuild failed:', err.message));
+                        } else {
+                            console.warn('Skipping HLS prebuild: Telegram not authorized');
+                        }
                     }
                 }
 

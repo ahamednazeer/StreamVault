@@ -4,6 +4,7 @@ import React, { useState, useRef, useCallback } from 'react';
 import { CloudArrowUp, FilmStrip, X } from '@phosphor-icons/react';
 import Modal from './Modal';
 import { api } from '@/lib/api';
+import { isHlsEnabled, isMkvRemuxEnabled } from '@/lib/media';
 
 interface UploadModalProps {
     isOpen: boolean;
@@ -25,10 +26,19 @@ export default function UploadModal({ isOpen, onClose, onUploadComplete }: Uploa
     const [isDragOver, setIsDragOver] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
+    const hlsEnabled = isHlsEnabled();
+    const remuxEnabled = isMkvRemuxEnabled();
+    const allowedExtensions = hlsEnabled ? ALLOWED_EXTENSIONS : (remuxEnabled ? ['.mp4', '.mkv'] : ['.mp4']);
+    const allowedTypes = hlsEnabled ? ALLOWED_TYPES : (remuxEnabled ? ['video/mp4', 'video/x-matroska', 'video/matroska'] : ['video/mp4']);
+
     const validateFile = (f: File): string | null => {
         const ext = '.' + f.name.split('.').pop()?.toLowerCase();
-        if (!ALLOWED_EXTENSIONS.includes(ext)) {
-            return `Invalid format. Allowed: ${ALLOWED_EXTENSIONS.join(', ')}`;
+        if (!allowedExtensions.includes(ext)) {
+            return hlsEnabled
+                ? `Invalid format. Allowed: ${ALLOWED_EXTENSIONS.join(', ')}`
+                : (remuxEnabled
+                    ? 'Invalid format. Only MP4 or MKV is supported when HLS is disabled.'
+                    : 'Invalid format. Only MP4 is supported when HLS is disabled.');
         }
         if (f.size > MAX_SIZE) {
             return 'File too large. Maximum size: 20GB';
@@ -136,12 +146,16 @@ export default function UploadModal({ isOpen, onClose, onUploadComplete }: Uploa
                             Drop your video here or click to browse
                         </p>
                         <p className="text-xs text-slate-500 font-mono">
-                            MP4, MKV, WebM • Max 20GB • Files are split into ~1.95GB parts for Telegram
+                            {hlsEnabled
+                                ? 'MP4, MKV, WebM • Max 20GB • Files are split into ~1.95GB parts for Telegram'
+                                : (remuxEnabled
+                                    ? 'MP4 or MKV • Max 20GB • MKV will be remuxed to MP4 (fast, no re-encode)'
+                                    : 'MP4 only (H.264 + AAC) • Max 20GB • HLS disabled for lower server load')}
                         </p>
                         <input
                             ref={fileInputRef}
                             type="file"
-                            accept=".mp4,.mkv,.webm,video/mp4,video/x-matroska,video/webm"
+                            accept={allowedExtensions.join(',') + ',' + allowedTypes.join(',')}
                             onChange={(e) => {
                                 const f = e.target.files?.[0];
                                 if (f) handleFileSelect(f);

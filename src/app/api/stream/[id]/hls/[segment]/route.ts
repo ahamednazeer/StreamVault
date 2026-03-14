@@ -3,6 +3,7 @@ import { connectDB } from '@/lib/db';
 import Video from '@/models/Video';
 import { ensureHlsPlaylist, getHlsSegmentPath, touchHlsAccess } from '@/lib/hls';
 import { getVideoParts } from '@/lib/videoParts';
+import { isHlsEnabled } from '@/lib/media';
 import fs from 'fs';
 
 type RouteParams = { params: Promise<{ id: string; segment: string }> };
@@ -24,6 +25,9 @@ async function waitForFile(filePath: string, timeoutMs: number): Promise<boolean
 export async function GET(request: NextRequest, { params }: RouteParams) {
     try {
         const { id, segment } = await params;
+        if (!isHlsEnabled()) {
+            return NextResponse.json({ error: 'HLS disabled' }, { status: 404 });
+        }
         if (!isSafeSegment(segment)) {
             return NextResponse.json({ error: 'Invalid segment' }, { status: 400 });
         }
@@ -99,6 +103,10 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
             },
         });
     } catch (error: any) {
+        const message = String(error?.message || '');
+        if (message.includes('Telegram not authorized') || message.includes('AUTH_KEY_UNREGISTERED')) {
+            return NextResponse.json({ error: 'Telegram not authorized' }, { status: 401 });
+        }
         console.error('HLS segment error:', error);
         return NextResponse.json({ error: 'Streaming failed' }, { status: 500 });
     }

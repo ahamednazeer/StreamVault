@@ -1,6 +1,7 @@
 import path from 'path';
 import mime from 'mime-types';
 import { getEffectiveMaxUploadSizeBytes } from './limits';
+import { isHlsEnabled, isMkvRemuxEnabled } from './media';
 
 const ALLOWED_EXTENSIONS = ['.mp4', '.mkv', '.webm'];
 const ALLOWED_MIMES = ['video/mp4', 'video/x-matroska', 'video/matroska', 'video/webm'];
@@ -16,31 +17,48 @@ export function validateVideoFile(
     fileSize: number,
     mimeType?: string
 ): ValidationResult {
+    const hlsEnabled = isHlsEnabled();
+    const remuxEnabled = isMkvRemuxEnabled();
+    const allowedExtensions = hlsEnabled ? ALLOWED_EXTENSIONS : (remuxEnabled ? ['.mp4', '.mkv'] : ['.mp4']);
+    const allowedMimes = hlsEnabled ? ALLOWED_MIMES : (remuxEnabled ? ['video/mp4', 'video/x-matroska', 'video/matroska'] : ['video/mp4']);
+
     // Check extension
     const ext = path.extname(fileName).toLowerCase();
-    if (!ALLOWED_EXTENSIONS.includes(ext)) {
+    if (!allowedExtensions.includes(ext)) {
         return {
             valid: false,
-            error: `Invalid file format. Allowed: ${ALLOWED_EXTENSIONS.join(', ')}`,
+            error: hlsEnabled
+                ? `Invalid file format. Allowed: ${ALLOWED_EXTENSIONS.join(', ')}`
+                : (remuxEnabled
+                    ? 'Invalid file format. Only MP4 or MKV is supported when HLS is disabled.'
+                    : 'Invalid file format. Only MP4 is supported when HLS is disabled.'),
         };
     }
 
     // Check MIME type
     if (mimeType) {
         const normalizedMime = mimeType.toLowerCase();
-        if (!ALLOWED_MIMES.includes(normalizedMime)) {
+        if (!allowedMimes.includes(normalizedMime)) {
             return {
                 valid: false,
-                error: `Invalid MIME type: ${mimeType}. Allowed: ${ALLOWED_MIMES.join(', ')}`,
+            error: hlsEnabled
+                ? `Invalid MIME type: ${mimeType}. Allowed: ${ALLOWED_MIMES.join(', ')}`
+                : (remuxEnabled
+                    ? `Invalid MIME type: ${mimeType}. Only video/mp4 or Matroska is supported when HLS is disabled.`
+                    : `Invalid MIME type: ${mimeType}. Only video/mp4 is supported when HLS is disabled.`),
             };
         }
     } else {
         // Infer from extension
         const inferredMime = mime.lookup(ext);
-        if (inferredMime && !ALLOWED_MIMES.includes(inferredMime)) {
+        if (inferredMime && !allowedMimes.includes(inferredMime)) {
             return {
                 valid: false,
-                error: `Invalid file type. Allowed: mp4, mkv, webm`,
+            error: hlsEnabled
+                ? 'Invalid file type. Allowed: mp4, mkv, webm'
+                : (remuxEnabled
+                    ? 'Invalid file type. Only MP4 or MKV is supported when HLS is disabled.'
+                    : 'Invalid file type. Only MP4 is supported when HLS is disabled.'),
             };
         }
     }
