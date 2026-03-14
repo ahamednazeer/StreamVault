@@ -97,3 +97,26 @@ export function remuxToMp4(inputPath: string, outputPath: string): Promise<void>
             .save(outputPath);
     });
 }
+
+export function transcodeToMp4(inputPath: string, outputPath: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+        ffmpeg(inputPath)
+            .outputOptions([
+                '-map 0:v:0',
+                '-map 0:a?',
+                '-c:v libx264',
+                '-preset veryfast',
+                '-crf 23',
+                '-c:a aac',
+                '-b:a 160k',
+                '-ac 2',
+                '-movflags +faststart',
+                '-f mp4',
+            ])
+            .on('error', (err) => {
+                reject(new Error(`FFmpeg transcode failed: ${err.message}`));
+            })
+            .on('end', () => resolve())
+            .save(outputPath);
+    });
+}

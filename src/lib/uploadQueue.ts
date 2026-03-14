@@ -2,9 +2,9 @@ import { Queue, Worker, Job } from 'bullmq';
 import { setMaxListeners } from 'events';
 import { getRedis } from './redis';
 import { uploadVideoToTelegram, uploadVideoStreamToTelegram, getChannelIds, getChannelIndexForId, advanceChannelIndex, deleteVideoFromTelegram, isTelegramAuthorized } from './telegram';
-import { extractVideoMetadata, remuxToMp4 } from './ffmpeg';
+import { extractVideoMetadata, remuxToMp4, transcodeToMp4 } from './ffmpeg';
 import { ensureHlsPlaylist } from './hls';
-import { shouldUseHls, isHlsEnabled, isMkvRemuxEnabled } from './media';
+import { shouldUseHls, isHlsEnabled, isMkvRemuxEnabled, isMkvTranscodeEnabled } from './media';
 import { getTelegramMaxUploadSizeBytes } from './limits';
 import { VideoPart } from './videoParts';
 import { connectDB } from './db';
@@ -120,6 +120,7 @@ export function startUploadWorker(): Worker {
                 let workingMime = undefined as string | undefined;
 
                 const remuxEnabled = !isHlsEnabled() && isMkvRemuxEnabled();
+                const transcodeEnabled = !isHlsEnabled() && isMkvTranscodeEnabled();
                 if (remuxEnabled && workingExt === '.mkv') {
                     const outputPath = path.join(
                         path.dirname(filePath),
@@ -144,8 +145,36 @@ export function startUploadWorker(): Worker {
                             mimeType: 'video/mp4',
                         });
                     } catch (err: any) {
+                        if (!transcodeEnabled) {
+                            try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch { }
+                            throw new Error(err?.message || 'Failed to remux MKV to MP4');
+                        }
                         try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch { }
-                        throw new Error(err?.message || 'Failed to remux MKV to MP4');
+                        const transcodePath = path.join(
+                            path.dirname(filePath),
+                            `${path.basename(filePath, workingExt)}_transcoded.mp4`
+                        );
+                        try {
+                            await Video.findByIdAndUpdate(videoId, {
+                                status: 'processing',
+                                lastError: 'Remux failed. Transcoding MKV to MP4 (this is slower)...',
+                            });
+                        } catch { }
+                        try {
+                            await transcodeToMp4(workingPath, transcodePath);
+                            try { if (fs.existsSync(workingPath)) fs.unlinkSync(workingPath); } catch { }
+                            workingPath = transcodePath;
+                            workingName = `${path.basename(fileName, workingExt)}.mp4`;
+                            workingExt = '.mp4';
+                            workingMime = 'video/mp4';
+                            await Video.findByIdAndUpdate(videoId, {
+                                tempFilePath: workingPath,
+                                mimeType: 'video/mp4',
+                            });
+                        } catch (transcodeErr: any) {
+                            try { if (fs.existsSync(transcodePath)) fs.unlinkSync(transcodePath); } catch { }
+                            throw new Error(transcodeErr?.message || 'Failed to transcode MKV to MP4');
+                        }
                     }
                 }
 

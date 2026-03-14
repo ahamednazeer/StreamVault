@@ -1,7 +1,7 @@
 import path from 'path';
 import mime from 'mime-types';
 import { getEffectiveMaxUploadSizeBytes } from './limits';
-import { isHlsEnabled, isMkvRemuxEnabled } from './media';
+import { isHlsEnabled, isMkvRemuxEnabled, isMkvTranscodeEnabled } from './media';
 
 const ALLOWED_EXTENSIONS = ['.mp4', '.mkv', '.webm'];
 const ALLOWED_MIMES = ['video/mp4', 'video/x-matroska', 'video/matroska', 'video/webm'];
@@ -19,8 +19,10 @@ export function validateVideoFile(
 ): ValidationResult {
     const hlsEnabled = isHlsEnabled();
     const remuxEnabled = isMkvRemuxEnabled();
-    const allowedExtensions = hlsEnabled ? ALLOWED_EXTENSIONS : (remuxEnabled ? ['.mp4', '.mkv'] : ['.mp4']);
-    const allowedMimes = hlsEnabled ? ALLOWED_MIMES : (remuxEnabled ? ['video/mp4', 'video/x-matroska', 'video/matroska'] : ['video/mp4']);
+    const transcodeEnabled = isMkvTranscodeEnabled();
+    const allowMkv = remuxEnabled || transcodeEnabled;
+    const allowedExtensions = hlsEnabled ? ALLOWED_EXTENSIONS : (allowMkv ? ['.mp4', '.mkv'] : ['.mp4']);
+    const allowedMimes = hlsEnabled ? ALLOWED_MIMES : (allowMkv ? ['video/mp4', 'video/x-matroska', 'video/matroska'] : ['video/mp4']);
 
     // Check extension
     const ext = path.extname(fileName).toLowerCase();
@@ -29,7 +31,7 @@ export function validateVideoFile(
             valid: false,
             error: hlsEnabled
                 ? `Invalid file format. Allowed: ${ALLOWED_EXTENSIONS.join(', ')}`
-                : (remuxEnabled
+                : (allowMkv
                     ? 'Invalid file format. Only MP4 or MKV is supported when HLS is disabled.'
                     : 'Invalid file format. Only MP4 is supported when HLS is disabled.'),
         };
@@ -43,7 +45,7 @@ export function validateVideoFile(
                 valid: false,
             error: hlsEnabled
                 ? `Invalid MIME type: ${mimeType}. Allowed: ${ALLOWED_MIMES.join(', ')}`
-                : (remuxEnabled
+                : (allowMkv
                     ? `Invalid MIME type: ${mimeType}. Only video/mp4 or Matroska is supported when HLS is disabled.`
                     : `Invalid MIME type: ${mimeType}. Only video/mp4 is supported when HLS is disabled.`),
             };
@@ -56,7 +58,7 @@ export function validateVideoFile(
                 valid: false,
             error: hlsEnabled
                 ? 'Invalid file type. Allowed: mp4, mkv, webm'
-                : (remuxEnabled
+                : (allowMkv
                     ? 'Invalid file type. Only MP4 or MKV is supported when HLS is disabled.'
                     : 'Invalid file type. Only MP4 is supported when HLS is disabled.'),
             };

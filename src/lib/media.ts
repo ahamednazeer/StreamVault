@@ -10,6 +10,12 @@ export function isMkvRemuxEnabled(): boolean {
     return true;
 }
 
+export function isMkvTranscodeEnabled(): boolean {
+    const flag = process.env.NEXT_PUBLIC_ENABLE_MKV_TRANSCODE ?? process.env.ENABLE_MKV_TRANSCODE;
+    if (flag === 'false') return false;
+    return true;
+}
+
 export function shouldUseHls(mimeType?: string, codec?: string): boolean {
     if (!isHlsEnabled()) return false;
     const mime = (mimeType || '').toLowerCase();
