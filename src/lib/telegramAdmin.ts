@@ -168,8 +168,13 @@ export async function startTelegramLogin(phoneNumber: string, forceSMS = false) 
             'telegram sendCode'
         );
         
-        const phoneCodeHash = (sentCode as any).phoneCodeHash;
-        const deliveryType = (sentCode as any).type;
+        const phoneCodeHash = (sentCode as any).phoneCodeHash as string | undefined;
+        const deliveryType = (sentCode as any).type as string | undefined;
+
+        if (!phoneCodeHash) {
+            const user = await getMeInfo();
+            return { status: 'authorized' as const, loginId: null, isCodeViaApp: true, user };
+        }
 
         console.info('[telegram] sendCode ok', { deliveryType });
 
