@@ -208,7 +208,7 @@ export async function verifyTelegramCode(loginId: string, phoneCode: string) {
             (client as any).signIn({
                 phone: pending.phoneNumber,
                 phoneCodeHash: pending.phoneCodeHash,
-                code: cleanedCode,
+                phoneCode: cleanedCode,
             }),
             VERIFY_TIMEOUT_MS,
             'telegram verify code'
